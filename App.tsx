@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { initFirebase, getConfigDisplay, FirebaseApp } from './services/firebase';
+import { runGeminiTests } from './services/gemini';
 import { StatusCard } from './components/StatusCard';
-import { ShieldCheck, Server, Database, Settings, XCircle, Code2, ChevronDown, ChevronUp } from 'lucide-react';
+import { ShieldCheck, Server, Database, Settings, XCircle, Code2, ChevronDown, ChevronUp, Bot, Sparkles, KeyRound } from 'lucide-react';
 
 interface TestStep {
   id: string;
@@ -11,7 +12,7 @@ interface TestStep {
   details?: string;
 }
 
-const DEFAULT_CONFIG = {
+const DEFAULT_FIREBASE_CONFIG = {
   apiKey: "AIzaSyCjk5g2nAAClXrTY4LOSxAzS0YNE8lsSgw",
   authDomain: "studio-5674530481-7e956.firebaseapp.com",
   projectId: "studio-5674530481-7e956",
@@ -20,116 +21,187 @@ const DEFAULT_CONFIG = {
   appId: "1:651553916706:web:79ce4d5791126f3288877b"
 };
 
+type AppMode = 'firebase' | 'gemini';
+
 const App: React.FC = () => {
-  const [appInstance, setAppInstance] = useState<FirebaseApp | null>(null);
-  const [configInput, setConfigInput] = useState<string>(JSON.stringify(DEFAULT_CONFIG, null, 2));
+  const [mode, setMode] = useState<AppMode>('firebase');
+  
+  // Firebase State
+  const [firebaseInstance, setFirebaseInstance] = useState<FirebaseApp | null>(null);
+  const [firebaseConfigInput, setFirebaseConfigInput] = useState<string>(JSON.stringify(DEFAULT_FIREBASE_CONFIG, null, 2));
   const [showConfig, setShowConfig] = useState(true);
   
-  const [steps, setSteps] = useState<TestStep[]>([
-    {
-      id: 'config',
-      title: 'Validación de Configuración',
-      description: 'Analizando el JSON proporcionado.',
-      status: 'idle'
-    },
-    {
-      id: 'init',
-      title: 'Inicialización del SDK',
-      description: 'Ejecutando initializeApp() con la configuración.',
-      status: 'idle'
-    },
-    {
-      id: 'auth_module',
-      title: 'Servicio de Autenticación',
-      description: 'Verificando la instanciación del módulo Auth.',
-      status: 'idle'
-    }
+  // Gemini State
+  const [geminiApiKey, setGeminiApiKey] = useState<string>('');
+  
+  // Shared Steps State
+  const [firebaseSteps, setFirebaseSteps] = useState<TestStep[]>([
+    { id: 'config', title: 'Validación de Configuración', description: 'Analizando el JSON proporcionado.', status: 'idle' },
+    { id: 'init', title: 'Inicialización del SDK', description: 'Ejecutando initializeApp() con la configuración.', status: 'idle' },
+    { id: 'auth_module', title: 'Servicio de Autenticación', description: 'Verificando la instanciación del módulo Auth.', status: 'idle' }
   ]);
 
-  const updateStep = (id: string, updates: Partial<TestStep>) => {
-    setSteps(prev => prev.map(step => step.id === id ? { ...step, ...updates } : step));
+  const [geminiSteps, setGeminiSteps] = useState<TestStep[]>([
+    { id: 'connect', title: 'Verificación de API Key', description: 'Intentando establecer conexión inicial con Gemini.', status: 'idle' },
+    { id: 'text', title: 'Generación de Texto', description: 'Prompt simple "Hola mundo" a gemini-2.5-flash.', status: 'idle' },
+    { id: 'stream', title: 'Prueba de Streaming', description: 'Verificando recepción de chunks en tiempo real.', status: 'idle' },
+    { id: 'tokens', title: 'Conteo de Tokens', description: 'Verificando endpoint countTokens.', status: 'idle' },
+    { id: 'vision', title: 'Capacidad Multimodal', description: 'Analizando imagen de prueba (Pixel).', status: 'idle' }
+  ]);
+
+  const updateStep = (mode: AppMode, id: string, updates: Partial<TestStep>) => {
+    if (mode === 'firebase') {
+      setFirebaseSteps(prev => prev.map(step => step.id === id ? { ...step, ...updates } : step));
+    } else {
+      setGeminiSteps(prev => prev.map(step => step.id === id ? { ...step, ...updates } : step));
+    }
   };
 
-  const runTests = async () => {
-    // Reset states
-    setSteps(prev => prev.map(s => ({ ...s, status: 'idle', details: undefined })));
-    setAppInstance(null);
+  const runFirebaseTests = async () => {
+    setFirebaseSteps(prev => prev.map(s => ({ ...s, status: 'idle', details: undefined })));
+    setFirebaseInstance(null);
     
-    // 1. Check Config Input
-    updateStep('config', { status: 'loading' });
+    // 1. Check Config
+    updateStep('firebase', 'config', { status: 'loading' });
     await new Promise(resolve => setTimeout(resolve, 400)); 
     
     let parsedConfig: any;
     try {
-      parsedConfig = JSON.parse(configInput);
+      parsedConfig = JSON.parse(firebaseConfigInput);
+      if (!parsedConfig.apiKey || !parsedConfig.projectId) throw new Error("Faltan campos requeridos (apiKey, projectId).");
       
-      if (!parsedConfig.apiKey || !parsedConfig.projectId) {
-        throw new Error("El JSON debe contener al menos 'apiKey' y 'projectId'.");
-      }
-
-      const configDisplay = getConfigDisplay(parsedConfig);
-      updateStep('config', { 
+      updateStep('firebase', 'config', { 
         status: 'success', 
-        details: JSON.stringify(configDisplay, null, 2) 
+        details: JSON.stringify(getConfigDisplay(parsedConfig), null, 2) 
       });
     } catch (e: any) {
-      updateStep('config', { status: 'error', details: `JSON Inválido: ${e.message}` });
-      return; // Stop here
+      updateStep('firebase', 'config', { status: 'error', details: `JSON Inválido: ${e.message}` });
+      return;
     }
 
     // 2. Initialize App
-    updateStep('init', { status: 'loading' });
+    updateStep('firebase', 'init', { status: 'loading' });
     await new Promise(resolve => setTimeout(resolve, 600));
 
-    // Note: initFirebase is async now because it might delete previous app
     const result = await initFirebase(parsedConfig);
     
     if (result.success && result.app) {
-      setAppInstance(result.app);
-      updateStep('init', { 
+      setFirebaseInstance(result.app);
+      updateStep('firebase', 'init', { 
         status: 'success', 
         details: `App Name: "${result.app.name}"\nAutomatic Data Collection: ${result.app.automaticDataCollectionEnabled}`
       });
     } else {
-      updateStep('init', { status: 'error', details: result.error?.message || result.message });
+      updateStep('firebase', 'init', { status: 'error', details: result.error?.message || result.message });
       return;
     }
 
-    // 3. Check Auth Service
-    updateStep('auth_module', { status: 'loading' });
+    // 3. Check Auth
+    updateStep('firebase', 'auth_module', { status: 'loading' });
     await new Promise(resolve => setTimeout(resolve, 600));
     
     if (result.auth) {
-       updateStep('auth_module', { 
+       updateStep('firebase', 'auth_module', { 
         status: 'success', 
         details: `Auth SDK cargado correctamente.\nCurrent User: ${result.auth.currentUser ? result.auth.currentUser.uid : 'null (No hay usuario logueado)'}`
       });
     } else {
-       updateStep('auth_module', { status: 'error', details: 'No se pudo obtener la instancia de Auth.' });
+       updateStep('firebase', 'auth_module', { status: 'error', details: 'No se pudo obtener la instancia de Auth.' });
     }
   };
 
-  // Run automatically on mount
+  const runGeminiTestFlow = async () => {
+    if (!geminiApiKey) {
+      alert("Por favor ingresa una API Key de Gemini.");
+      return;
+    }
+    setGeminiSteps(prev => prev.map(s => ({ ...s, status: 'idle', details: undefined })));
+
+    // 1. Connection
+    updateStep('gemini', 'connect', { status: 'loading' });
+    const connResult = await runGeminiTests.connect(geminiApiKey);
+    if (connResult.success) {
+      updateStep('gemini', 'connect', { status: 'success', details: JSON.stringify(connResult.data, null, 2) });
+    } else {
+      updateStep('gemini', 'connect', { status: 'error', details: connResult.message });
+      return; // Stop if connection fails
+    }
+
+    // 2. Text Generation
+    updateStep('gemini', 'text', { status: 'loading' });
+    const textResult = await runGeminiTests.generateText(geminiApiKey);
+    if (textResult.success) updateStep('gemini', 'text', { status: 'success', details: JSON.stringify(textResult.data, null, 2) });
+    else updateStep('gemini', 'text', { status: 'error', details: textResult.message });
+
+    // 3. Streaming
+    updateStep('gemini', 'stream', { status: 'loading' });
+    const streamResult = await runGeminiTests.streamText(geminiApiKey);
+    if (streamResult.success) updateStep('gemini', 'stream', { status: 'success', details: JSON.stringify(streamResult.data, null, 2) });
+    else updateStep('gemini', 'stream', { status: 'error', details: streamResult.message });
+
+    // 4. Tokens
+    updateStep('gemini', 'tokens', { status: 'loading' });
+    const tokenResult = await runGeminiTests.countTokens(geminiApiKey);
+    if (tokenResult.success) updateStep('gemini', 'tokens', { status: 'success', details: JSON.stringify(tokenResult.data, null, 2) });
+    else updateStep('gemini', 'tokens', { status: 'error', details: tokenResult.message });
+
+    // 5. Vision
+    updateStep('gemini', 'vision', { status: 'loading' });
+    const visionResult = await runGeminiTests.vision(geminiApiKey);
+    if (visionResult.success) updateStep('gemini', 'vision', { status: 'success', details: JSON.stringify(visionResult.data, null, 2) });
+    else updateStep('gemini', 'vision', { status: 'error', details: visionResult.message });
+  };
+
+  // Run initial firebase test on mount if mode is firebase (default)
   useEffect(() => {
-    runTests();
+    if (mode === 'firebase') {
+      runFirebaseTests();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const allSuccess = steps.every(s => s.status === 'success');
-  const hasError = steps.some(s => s.status === 'error');
-  const isLoading = steps.some(s => s.status === 'loading');
+  const currentSteps = mode === 'firebase' ? firebaseSteps : geminiSteps;
+  const allSuccess = currentSteps.every(s => s.status === 'success');
+  const hasError = currentSteps.some(s => s.status === 'error');
+  const isLoading = currentSteps.some(s => s.status === 'loading');
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 md:p-12 font-sans">
       <div className="max-w-3xl mx-auto">
         
-        {/* Header */}
+        {/* Header with Tabs */}
         <div className="mb-8 text-center">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-orange-100 text-orange-600 mb-4 shadow-sm">
-            <Database size={32} />
+          <div className="flex justify-center mb-6">
+            <div className="bg-white p-1 rounded-xl shadow-sm border border-slate-200 inline-flex">
+              <button 
+                onClick={() => setMode('firebase')}
+                className={`flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-medium transition-all ${
+                  mode === 'firebase' ? 'bg-orange-100 text-orange-700' : 'text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                <Database size={18} />
+                Firebase
+              </button>
+              <button 
+                onClick={() => setMode('gemini')}
+                className={`flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-medium transition-all ${
+                  mode === 'gemini' ? 'bg-blue-100 text-blue-700' : 'text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                <Sparkles size={18} />
+                Gemini AI
+              </button>
+            </div>
           </div>
-          <h1 className="text-3xl font-bold text-slate-900">Firebase Connection Test</h1>
-          <p className="text-slate-500 mt-2">Herramienta de diagnóstico para verificar la integración de Firebase SDK.</p>
+          
+          <h1 className="text-3xl font-bold text-slate-900">
+            {mode === 'firebase' ? 'Firebase Connection Test' : 'Gemini API Diagnostics'}
+          </h1>
+          <p className="text-slate-500 mt-2">
+            {mode === 'firebase' 
+              ? 'Herramienta de diagnóstico para verificar integración de Firebase SDK.' 
+              : 'Suite de pruebas para validar conectividad y funciones de Gemini API.'}
+          </p>
         </div>
 
         {/* Configuration Section */}
@@ -139,69 +211,88 @@ const App: React.FC = () => {
             className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 transition-colors text-slate-800 font-medium border-b border-slate-100"
           >
             <div className="flex items-center gap-2">
-              <Code2 size={20} className="text-slate-500" />
-              Configuración de Firebase (JSON)
+              {mode === 'firebase' ? <Code2 size={20} className="text-orange-500" /> : <KeyRound size={20} className="text-blue-500" />}
+              {mode === 'firebase' ? 'Configuración Firebase (JSON)' : 'API Key de Gemini'}
             </div>
             {showConfig ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
           </button>
           
           {showConfig && (
             <div className="p-4">
-              <p className="text-sm text-slate-500 mb-2">
-                Pega aquí tu objeto <code>firebaseConfig</code>. Puedes encontrarlo en la consola de Firebase &gt; Project Settings.
-              </p>
-              <textarea
-                value={configInput}
-                onChange={(e) => setConfigInput(e.target.value)}
-                className="w-full h-48 p-4 font-mono text-xs md:text-sm bg-slate-900 text-green-400 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-y"
-                placeholder='{ "apiKey": "...", "projectId": "..." }'
-                spellCheck={false}
-              />
-              <div className="mt-2 text-right">
-                 <button 
-                   onClick={() => setConfigInput(JSON.stringify(DEFAULT_CONFIG, null, 2))}
-                   className="text-xs text-slate-400 hover:text-slate-600 underline"
-                 >
-                   Restaurar valores por defecto
-                 </button>
-              </div>
+              {mode === 'firebase' ? (
+                <>
+                  <p className="text-sm text-slate-500 mb-2">
+                    Pega tu objeto <code>firebaseConfig</code> aquí.
+                  </p>
+                  <textarea
+                    value={firebaseConfigInput}
+                    onChange={(e) => setFirebaseConfigInput(e.target.value)}
+                    className="w-full h-48 p-4 font-mono text-xs md:text-sm bg-slate-900 text-green-400 rounded-lg border border-slate-300 outline-none resize-y"
+                    spellCheck={false}
+                  />
+                  <div className="mt-2 text-right">
+                     <button 
+                       onClick={() => setFirebaseConfigInput(JSON.stringify(DEFAULT_FIREBASE_CONFIG, null, 2))}
+                       className="text-xs text-slate-400 hover:text-slate-600 underline"
+                     >
+                       Restaurar defecto
+                     </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                   <p className="text-sm text-slate-500 mb-2">
+                    Ingresa una API Key válida para ejecutar las pruebas.
+                  </p>
+                  <input
+                    type="password"
+                    value={geminiApiKey}
+                    onChange={(e) => setGeminiApiKey(e.target.value)}
+                    placeholder="AIzaSy..."
+                    className="w-full p-3 font-mono text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                  <p className="text-xs text-slate-400 mt-2">
+                    La clave solo se usa localmente para las pruebas y no se guarda.
+                  </p>
+                </>
+              )}
             </div>
           )}
         </div>
 
-        {/* Overall Status Banner */}
-        <div className={`mb-8 p-4 rounded-xl border shadow-sm flex items-center gap-4 ${
+        {/* Status Banner */}
+        <div className={`mb-8 p-4 rounded-xl border shadow-sm flex items-center gap-4 transition-colors duration-500 ${
           hasError 
             ? 'bg-red-50 border-red-100 text-red-800' 
-            : allSuccess 
+            : allSuccess && !isLoading && stepsAreComplete(currentSteps)
               ? 'bg-emerald-50 border-emerald-100 text-emerald-800'
               : 'bg-white border-slate-200 text-slate-600'
         }`}>
           {hasError ? (
             <div className="bg-red-100 p-2 rounded-full"><XCircle size={24} /></div>
-          ) : allSuccess ? (
+          ) : allSuccess && !isLoading && stepsAreComplete(currentSteps) ? (
             <div className="bg-emerald-100 p-2 rounded-full"><ShieldCheck size={24} /></div>
           ) : (
-             <div className="bg-slate-100 p-2 rounded-full"><Settings size={24} className="animate-spin-slow" /></div>
+             <div className="bg-slate-100 p-2 rounded-full"><Server size={24} className={isLoading ? "animate-pulse" : ""} /></div>
           )}
           
           <div>
             <h2 className="font-bold text-lg">
-              {hasError ? 'Error de Conexión' : allSuccess ? 'Sistema Operativo' : 'Verificando...'}
+              {hasError ? 'Diagnóstico Fallido' : allSuccess && !isLoading && stepsAreComplete(currentSteps) ? 'Sistema Operativo' : 'Estado del Diagnóstico'}
             </h2>
             <p className="text-sm opacity-90">
               {hasError 
-                ? 'Se encontraron problemas durante la inicialización.' 
-                : allSuccess 
-                  ? 'Todos los sistemas de Firebase se inicializaron correctamente.' 
-                  : 'Ejecutando pruebas de diagnóstico...'}
+                ? 'Se encontraron problemas durante la ejecución.' 
+                : allSuccess && !isLoading && stepsAreComplete(currentSteps)
+                  ? 'Todas las pruebas pasaron exitosamente.' 
+                  : 'Listo para iniciar pruebas.'}
             </p>
           </div>
         </div>
 
         {/* Steps List */}
         <div className="space-y-4">
-          {steps.map((step) => (
+          {currentSteps.map((step) => (
             <StatusCard
               key={step.id}
               title={step.title}
@@ -215,23 +306,27 @@ const App: React.FC = () => {
         {/* Actions */}
         <div className="mt-8 flex justify-center">
           <button
-            onClick={runTests}
+            onClick={mode === 'firebase' ? runFirebaseTests : runGeminiTestFlow}
             disabled={isLoading}
-            className="flex items-center gap-2 px-6 py-3 bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium shadow-lg shadow-slate-200"
+            className={`flex items-center gap-2 px-6 py-3 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all font-medium shadow-lg hover:shadow-xl ${
+              mode === 'firebase' 
+                ? 'bg-orange-600 hover:bg-orange-700 shadow-orange-200' 
+                : 'bg-blue-600 hover:bg-blue-700 shadow-blue-200'
+            }`}
           >
-            <Server size={18} />
-            {isLoading ? 'Ejecutando...' : 'Probar Conexión'}
+            {isLoading ? <Server size={18} className="animate-spin" /> : mode === 'firebase' ? <Database size={18} /> : <Bot size={18} />}
+            {isLoading ? 'Ejecutando...' : 'Iniciar Diagnóstico'}
           </button>
-        </div>
-
-        {/* Footer Info */}
-        <div className="mt-12 pt-6 border-t border-slate-200 text-center text-xs text-slate-400">
-          <p>React 18 + TypeScript + Firebase SDK v10+</p>
         </div>
 
       </div>
     </div>
   );
 };
+
+// Helper to check if tests actually ran (not just initial idle state)
+function stepsAreComplete(steps: TestStep[]) {
+  return steps.every(s => s.status !== 'idle' && s.status !== 'loading');
+}
 
 export default App;
